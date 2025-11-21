@@ -3,6 +3,7 @@ class SquidManager
 {
     public static function regenerate(array $proxies, $configPath, $passwdPath)
     {
+        // Only active proxies contribute to the include file. Main squid.conf must include this path.
         $httpProxies = array_filter($proxies, function ($proxy) {
             return isset($proxy['status']) ? $proxy['status'] === 'active' : true;
         });
@@ -17,29 +18,7 @@ class SquidManager
             $authUsers[$proxy['proxy_username']] = $proxy['proxy_password'];
         }
 
-        $global = [
-            'auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwd',
-            'auth_param basic realm DATAZ Proxy Service',
-            'auth_param basic credentialsttl 2 hours',
-            'auth_param basic children 10',
-            'acl authenticated proxy_auth REQUIRED',
-            'acl SSL_ports port 443',
-            'acl Safe_ports port 80',
-            'acl Safe_ports port 443',
-            'acl Safe_ports port 1025-65535',
-            'acl CONNECT method CONNECT',
-            'http_access deny !Safe_ports',
-            'http_access deny CONNECT !SSL_ports',
-            'http_access allow authenticated',
-            'http_access deny all',
-            'cache deny all',
-            'dns_v4_first on',
-            'via off',
-            'forwarded_for off',
-            'visible_hostname dataz-squid',
-        ];
-
-        $content = implode("\n", $global) . "\n" . implode("\n", $lines) . "\n";
+        $content = implode("\n", $lines) . "\n";
         if (!is_dir(dirname($configPath))) {
             mkdir(dirname($configPath), 0755, true);
         }

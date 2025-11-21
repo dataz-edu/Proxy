@@ -13,7 +13,11 @@ class DanteManager
         }
 
         self::cleanupRemoved($socksProxies, $confDir, $systemdDir);
-        self::reload();
+        self::daemonReload();
+
+        foreach ($socksProxies as $proxy) {
+            self::enableAndRestart($proxy['id']);
+        }
     }
 
     private static function writeConfig(array $proxy, $confDir)
@@ -21,6 +25,9 @@ class DanteManager
         $id = $proxy['id'];
         if (!is_dir($confDir)) {
             mkdir($confDir, 0755, true);
+        }
+        if (!is_dir('/var/log/danted')) {
+            mkdir('/var/log/danted', 0755, true);
         }
         $config = "logoutput: /var/log/danted/danted-{$id}.log\n" .
             "internal: {$proxy['proxy_ip']} port = {$proxy['socks5_port']}\n" .
@@ -49,6 +56,12 @@ class DanteManager
         file_put_contents($path, $service);
     }
 
+    private static function enableAndRestart($id)
+    {
+        @exec('systemctl enable danted-' . (int)$id . '.service');
+        @exec('systemctl restart danted-' . (int)$id . '.service');
+    }
+
     private static function cleanupRemoved(array $currentProxies, $confDir, $systemdDir)
     {
         $existingConfigs = glob(rtrim($confDir, '/') . '/danted-*.conf');
@@ -69,14 +82,8 @@ class DanteManager
         }
     }
 
-    private static function reload()
+    private static function daemonReload()
     {
         @exec('systemctl daemon-reload');
-        $services = glob('/etc/systemd/system/danted-*.service') ?: [];
-        foreach ($services as $service) {
-            $name = basename($service, '.service');
-            @exec('systemctl enable ' . $name . '');
-            @exec('systemctl restart ' . $name);
-        }
     }
 }
