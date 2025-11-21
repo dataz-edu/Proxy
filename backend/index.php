@@ -27,34 +27,60 @@ function get_active_proxies()
     return DB::fetchAll('SELECT * FROM mod_dataz_proxy_services WHERE status = "active"');
 }
 
-function allocate_ip()
+function lock_free_ip($virtUrl, $virtKey, $virtPass, $virtVpsId)
 {
-    $row = DB::fetch('SELECT * FROM mod_dataz_proxy_ip_pool WHERE is_used = 0 ORDER BY id ASC LIMIT 1');
-    if (!$row) {
-        throw new RuntimeException('No free IP available');
+    $pdo = DB::pdo();
+    $attempts = 0;
+    while (true) {
+        $stmt = $pdo->prepare('SELECT * FROM mod_dataz_proxy_ip_pool WHERE is_used = 0 ORDER BY id ASC LIMIT 1 FOR UPDATE');
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            throw new RuntimeException('No free IP available');
+        }
+
+        $attempts++;
+        if ($attempts > 50) {
+            throw new RuntimeException('No available IP passed validation');
+        }
+
+        if ($virtUrl && $virtKey && $virtPass && $virtVpsId) {
+            if (!Virtualizor::isIpAvailable($virtUrl, $virtKey, $virtPass, $virtVpsId, $row['ip_address'])) {
+                Utils::logMessage('warning', 'Virtualizor reports IP unavailable', ['ip' => $row['ip_address']]);
+                DB::execute('UPDATE mod_dataz_proxy_ip_pool SET is_used = 1, updated_at = NOW() WHERE id = :id', [':id' => $row['id']]);
+                continue;
+            }
+        }
+
+        return $row;
     }
-    DB::execute(
-        'UPDATE mod_dataz_proxy_ip_pool SET is_used = 1, updated_at = NOW() WHERE id = :id',
-        [':id' => $row['id']]
-    );
-    return $row;
 }
 
-function allocate_ports($count = 2)
+function lock_free_ports($count = 2)
 {
-    $rows = DB::fetchAll('SELECT * FROM mod_dataz_proxy_port_pool WHERE is_used = 0 ORDER BY id ASC LIMIT ' . (int)$count);
+    $pdo = DB::pdo();
+    $stmt = $pdo->prepare('SELECT * FROM mod_dataz_proxy_port_pool WHERE is_used = 0 ORDER BY id ASC LIMIT ' . (int)$count . ' FOR UPDATE');
+    $stmt->execute();
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     if (count($rows) < $count) {
         throw new RuntimeException('No free port available');
     }
-    $ports = [];
-    foreach ($rows as $row) {
-        DB::execute(
-            'UPDATE mod_dataz_proxy_port_pool SET is_used = 1, updated_at = NOW() WHERE id = :id',
-            [':id' => $row['id']]
-        );
-        $ports[] = $row;
+    return $rows;
+}
+
+function mark_ip_used($ipId, $vpsId = null)
+{
+    DB::execute('UPDATE mod_dataz_proxy_ip_pool SET is_used = 1, attached_to_vps_id = :vps, updated_at = NOW() WHERE id = :id', [
+        ':id' => $ipId,
+        ':vps' => $vpsId,
+    ]);
+}
+
+function mark_port_used(array $portRows)
+{
+    foreach ($portRows as $row) {
+        DB::execute('UPDATE mod_dataz_proxy_port_pool SET is_used = 1, updated_at = NOW() WHERE id = :id', [':id' => $row['id']]);
     }
-    return $ports;
 }
 
 function free_ip($ipAddress)
@@ -81,22 +107,27 @@ $router->add('POST', '/proxy/create', function () use ($config) {
     $virtVpsId = $data['virt_vps_id'] ?? null;
 
     $created = [];
-    $allocated = ['ips' => [], 'ports' => []];
+    $attachedIps = [];
     try {
+        DB::beginTransaction();
         for ($i = 0; $i < $quantity; $i++) {
-            $ipRow = allocate_ip();
-            $ports = allocate_ports(2);
-            $allocated['ips'][] = $ipRow['ip_address'];
-            $allocated['ports'][] = $ports[0]['port'];
-            $allocated['ports'][] = $ports[1]['port'];
+            $ipRow = lock_free_ip($virtUrl, $virtKey, $virtPass, $virtVpsId);
+            $ports = lock_free_ports(2);
 
             if ($autoAssign && $virtUrl && $virtKey && $virtPass && $virtVpsId) {
+                if (!Virtualizor::isIpAvailable($virtUrl, $virtKey, $virtPass, $virtVpsId, $ipRow['ip_address'])) {
+                    Utils::logMessage('warning', 'IP unavailable during attach', ['ip' => $ipRow['ip_address']]);
+                    DB::execute('UPDATE mod_dataz_proxy_ip_pool SET is_used = 1, updated_at = NOW() WHERE id = :id', [':id' => $ipRow['id']]);
+                    continue;
+                }
                 Virtualizor::addIp($virtUrl, $virtKey, $virtPass, $virtVpsId, $ipRow['ip_address']);
-                DB::execute('UPDATE mod_dataz_proxy_ip_pool SET attached_to_vps_id = :vps, updated_at = NOW() WHERE id = :id', [
-                    ':vps' => $virtVpsId,
-                    ':id' => $ipRow['id'],
-                ]);
+                $attachedIps[] = $ipRow['ip_address'];
+                mark_ip_used($ipRow['id'], $virtVpsId);
+            } else {
+                mark_ip_used($ipRow['id'], null);
             }
+
+            mark_port_used($ports);
 
             $username = 'proxy_' . Utils::randomString(8);
             $password = Utils::randomString(16);
@@ -132,6 +163,10 @@ $router->add('POST', '/proxy/create', function () use ($config) {
                 'status' => $status,
             ];
         }
+        if (count($created) < $quantity) {
+            throw new RuntimeException('Unable to allocate requested number of proxies');
+        }
+        DB::commit();
 
         $proxies = get_active_proxies();
         SquidManager::regenerate($proxies, $config['squid_conf'], $config['squid_passwd']);
@@ -139,11 +174,15 @@ $router->add('POST', '/proxy/create', function () use ($config) {
 
         Response::json(['message' => 'created', 'data' => ['proxies' => $created]]);
     } catch (Exception $e) {
-        foreach ($allocated['ports'] as $p) {
-            free_port($p);
-        }
-        foreach ($allocated['ips'] as $ip) {
-            free_ip($ip);
+        DB::rollBack();
+        foreach ($attachedIps as $ip) {
+            try {
+                if ($virtUrl && $virtKey && $virtPass && $virtVpsId) {
+                    Virtualizor::removeIp($virtUrl, $virtKey, $virtPass, $virtVpsId, $ip);
+                }
+            } catch (Exception $ex) {
+                Utils::logMessage('warning', 'rollback detach failed', ['ip' => $ip, 'error' => $ex->getMessage()]);
+            }
         }
         Utils::logMessage('error', 'create failed', ['error' => $e->getMessage()]);
         Response::json(['message' => $e->getMessage()], 400);
@@ -210,19 +249,26 @@ $router->add('DELETE', '/proxy/delete', function () use ($config) {
     $virtPass = $data['virt_api_pass'] ?? $config['virtualizor']['api_pass'];
     $virtVpsId = $data['virt_vps_id'] ?? null;
 
-    foreach ($proxies as $proxy) {
-        if ($virtUrl && $virtKey && $virtPass && $virtVpsId) {
-            try {
-                Virtualizor::removeIp($virtUrl, $virtKey, $virtPass, $virtVpsId, $proxy['proxy_ip']);
-            } catch (Exception $e) {
-                Utils::logMessage('warning', 'detach ip failed', ['error' => $e->getMessage(), 'ip' => $proxy['proxy_ip']]);
+    try {
+        DB::beginTransaction();
+        foreach ($proxies as $proxy) {
+            if ($virtUrl && $virtKey && $virtPass && $virtVpsId) {
+                try {
+                    Virtualizor::removeIp($virtUrl, $virtKey, $virtPass, $virtVpsId, $proxy['proxy_ip']);
+                } catch (Exception $e) {
+                    Utils::logMessage('warning', 'detach ip failed', ['error' => $e->getMessage(), 'ip' => $proxy['proxy_ip']]);
+                }
             }
+            free_ip($proxy['proxy_ip']);
+            free_port($proxy['http_port']);
+            free_port($proxy['socks5_port']);
         }
-        free_ip($proxy['proxy_ip']);
-        free_port($proxy['http_port']);
-        free_port($proxy['socks5_port']);
+        DB::execute('UPDATE mod_dataz_proxy_services SET status = "deleted", updated_at = NOW() WHERE service_id = :sid', [':sid' => $serviceId]);
+        DB::commit();
+    } catch (Exception $e) {
+        DB::rollBack();
+        Response::json(['message' => $e->getMessage()], 400);
     }
-    DB::execute('UPDATE mod_dataz_proxy_services SET status = "deleted", updated_at = NOW() WHERE service_id = :sid', [':sid' => $serviceId]);
     $proxies = get_active_proxies();
     SquidManager::regenerate($proxies, $config['squid_conf'], $config['squid_passwd']);
     DanteManager::regenerate($proxies, $config['dante_conf_dir'], $config['dante_systemd_dir']);

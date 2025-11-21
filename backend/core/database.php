@@ -56,4 +56,36 @@ class DB
         $stmt->execute($params);
         return self::pdo()->lastInsertId();
     }
+
+    public static function beginTransaction()
+    {
+        self::pdo()->beginTransaction();
+    }
+
+    public static function commit()
+    {
+        if (self::pdo()->inTransaction()) {
+            self::pdo()->commit();
+        }
+    }
+
+    public static function rollBack()
+    {
+        if (self::pdo()->inTransaction()) {
+            self::pdo()->rollBack();
+        }
+    }
+
+    public static function transaction(callable $callback)
+    {
+        self::beginTransaction();
+        try {
+            $result = $callback();
+            self::commit();
+            return $result;
+        } catch (Exception $e) {
+            self::rollBack();
+            throw $e;
+        }
+    }
 }

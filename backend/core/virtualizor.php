@@ -49,4 +49,25 @@ class Virtualizor
             'ips' => [$ip],
         ]);
     }
+
+    public static function isIpAvailable($baseUrl, $apiKey, $apiPass, $vpsId, $ip)
+    {
+        try {
+            $response = self::request($baseUrl, $apiKey, $apiPass, 'listips', [
+                'vpsid' => $vpsId,
+                'search' => $ip,
+            ]);
+            if (isset($response['ips']) && is_array($response['ips'])) {
+                foreach ($response['ips'] as $item) {
+                    if (!empty($item['ip']) && $item['ip'] === $ip) {
+                        return false;
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            // If Virtualizor validation fails, treat as unavailable to avoid duplicate assignment
+            return false;
+        }
+        return true;
+    }
 }
