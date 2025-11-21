@@ -18,23 +18,24 @@ CREATE TABLE IF NOT EXISTS `mod_dataz_proxy_services` (
 
 CREATE TABLE IF NOT EXISTS `mod_dataz_proxy_ip_pool` (
   `id` int NOT NULL AUTO_INCREMENT,
-  `ip_address` varchar(64) NOT NULL,
-  `is_used` tinyint(1) NOT NULL DEFAULT 0,
-  `attached_to_vps_id` int DEFAULT NULL,
+  `cidr` varchar(64) NOT NULL,
+  `start_int` bigint NOT NULL,
+  `end_int` bigint NOT NULL,
+  `current_int` bigint DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `ip_unique` (`ip_address`)
+  UNIQUE KEY `cidr_unique` (`cidr`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `mod_dataz_proxy_port_pool` (
   `id` int NOT NULL AUTO_INCREMENT,
-  `port` int NOT NULL,
-  `is_used` tinyint(1) NOT NULL DEFAULT 0,
+  `min_port` int NOT NULL,
+  `max_port` int NOT NULL,
+  `current_port` int DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `port_unique` (`port`)
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `mod_dataz_proxy_logs` (

@@ -1,85 +1,68 @@
-# Installation Guide
+# Hướng dẫn Cài đặt & Cấu hình
 
-This guide covers deploying the WHMCS proxy automation module, backend API, and supporting services on Ubuntu 22.04 with PHP 7.4 and MariaDB 10.6.x.
+## Giới thiệu
+Tài liệu này hướng dẫn triển khai và cấu hình hệ thống tự động hóa proxy cho WHMCS, gồm backend PHP 7.4, cơ sở dữ liệu MariaDB 10.6.x và dịch vụ Squid/Dante trên Ubuntu 22.04.
 
-## Requirements
-- PHP 7.4 (CLI and web SAPI) with extensions: `curl`, `pdo_mysql`, `json`, `mbstring`
+## Yêu cầu hệ thống
+- PHP 7.4 (CLI và web SAPI) với các extension: `curl`, `pdo_mysql`, `json`, `mbstring`
 - MariaDB 10.6.x
-- WHMCS with module upload access
-- Ubuntu 22.04 proxy server with systemd
-- Squid (HTTP) and Dante (SOCKS5) installed on the proxy server
-- Virtualizor API URL, API key, API pass, and target VPS ID for attaching/detaching IPs
-- Git, zip, and bash for build/release scripts
+- WHMCS có quyền tải lên module server
+- Máy chủ proxy Ubuntu 22.04 sử dụng systemd
+- Squid (HTTP) và Dante (SOCKS5) đã cài đặt trên máy chủ proxy
+- Thông tin Virtualizor API URL, API key, API pass và VPS ID mục tiêu để gán/gỡ IP
+- Git, zip và bash cho các script build/release
 
-## Database Initialization
-1. Create the schema and tables:
+## Khởi tạo database
+1. Tạo schema và bảng:
 ```bash
 mysql -u root -p < sql/schema.sql
 ```
-2. Populate IP and port pools with available values for your proxy server:
+2. Khai báo dải IP và dải port (ví dụ minh họa, chỉ vài dòng). Backend sẽ tự động duyệt từng IP/port trong dải:
 ```sql
-INSERT INTO mod_dataz_proxy_ip_pool (ip_address) VALUES ('203.0.113.10'),('203.0.113.11');
-INSERT INTO mod_dataz_proxy_port_pool (port) VALUES (30000),(30001),(30002);
-```
+INSERT INTO mod_dataz_proxy_ip_pool (cidr, start_int, end_int, current_int) VALUES
+  ('160.30.136.0/23', INET_ATON('160.30.136.0'), INET_ATON('160.30.137.255'), NULL),
+  ('160.250.132.0/23', INET_ATON('160.250.132.0'), INET_ATON('160.250.133.255'), NULL);
 
-## Backend Deployment
-1. Copy the `backend/` directory to the proxy server (e.g., `/opt/dataz-proxy/backend`).
-2. Update `backend/config.php` with database credentials, API token, Squid/Dante paths, and Virtualizor settings.
-3. Set secure permissions (example):
+INSERT INTO mod_dataz_proxy_port_pool (min_port, max_port, current_port) VALUES
+  (1080, 1200, NULL);
+```
+> Ghi chú: Admin nên import dữ liệu thực tế (đủ dải IP/port sản xuất) từ file riêng như `sql/ip_port_seed.sql` nếu có.
+
+## Cài backend
+1. Sao chép thư mục `backend/` lên máy chủ proxy (ví dụ: `/opt/dataz-proxy/backend`).
+2. Cập nhật `backend/config.php` với thông tin database, `api_token`, đường dẫn Squid/Dante và thông số Virtualizor.
+3. Thiết lập phân quyền an toàn (ví dụ):
 ```bash
 chown -R www-data:www-data /opt/dataz-proxy/backend
 find /opt/dataz-proxy/backend -type f -exec chmod 640 {} \;
 find /opt/dataz-proxy/backend -type d -exec chmod 750 {} \;
 ```
-4. Serve the backend via your web server (Apache/Nginx with PHP 7.4) or for testing:
+4. Triển khai qua web server (Apache/Nginx + PHP 7.4) hoặc kiểm thử nhanh:
 ```bash
 php -S 0.0.0.0:8080 -t /opt/dataz-proxy/backend
 ```
-5. Ensure HTTPS and firewall rules restrict access. All API requests must include `Authorization: Bearer <API_TOKEN>` matching `config.php`.
+5. Bảo vệ HTTPS và firewall; mọi request phải kèm header `Authorization: Bearer <API_TOKEN>` khớp với `config.php`.
 
-## WHMCS Module Installation
-1. Copy `modules/servers/dataz_proxy/` into your WHMCS installation’s `modules/servers/` directory.
-2. In WHMCS admin, create or edit a product to use the `DATAZ Proxy Provisioning` module.
-3. Configure module settings:
-   - `API_ENDPOINT`: Backend base URL (e.g., `https://proxy.example.com/backend`).
-   - `API_TOKEN`: Must match backend `api_token`.
-   - `PROXY_TYPE`: `http`, `socks5`, or `both`.
-   - `AUTO_ASSIGN_IP`: `yes`/`no` (whether to attach IPs via Virtualizor).
-   - `VIRT_API_URL`, `VIRT_API_KEY`, `VIRT_API_PASS`, `VIRT_VPS_ID`: Virtualizor connection details.
-4. Add a custom product field named `Proxy List` (textarea) to store generated proxy credentials in `ip:port:user:pass` format.
-5. Place the backend URL and token in the product’s module settings and save.
+## Cài module WHMCS
+1. Sao chép `modules/servers/dataz_proxy/` vào thư mục `modules/servers/` của WHMCS.
+2. Trong WHMCS Admin, tạo/sửa sản phẩm và chọn module `DATAZ Proxy Provisioning`.
+3. Cấu hình module:
+   - `API_ENDPOINT`: URL backend (ví dụ `https://proxy.example.com/backend`).
+   - `API_TOKEN`: Trùng `api_token` của backend.
+   - `PROXY_TYPE`: `http`, `socks5` hoặc `both`.
+   - `AUTO_ASSIGN_IP`: `yes`/`no` (tự gán IP qua Virtualizor).
+   - `VIRT_API_URL`, `VIRT_API_KEY`, `VIRT_API_PASS`, `VIRT_VPS_ID`: thông tin Virtualizor.
+4. Thêm custom field sản phẩm tên `Proxy List` (textarea) để lưu danh sách proxy `ip:port:user:pass`.
+5. Lưu cấu hình sau khi nhập URL và token backend.
 
-## Service Notes
-- Squid configuration is generated at `/etc/squid/conf.d/dataz_proxies.conf` and reloads via `systemctl reload squid`.
-- Dante per-proxy configs are generated as `/etc/danted-<id>.conf` with systemd units `/etc/systemd/system/danted-<id>.service`.
-- Ensure `/usr/local/sbin/sockd` exists; adjust paths in `backend/core/dante.php` if needed.
-- Confirm Squid main config includes `include /etc/squid/conf.d/*.conf` and that firewall rules allow allocated ports.
+## Cấu hình IP/port
+- Dải IP quản lý trong `mod_dataz_proxy_ip_pool` theo CIDR với con trỏ `current_int`; backend sẽ tự tăng từng IP.
+- Dải port quản lý trong `mod_dataz_proxy_port_pool` với `min_port`, `max_port`, `current_port`; backend sẽ tự cấp phát tuần tự.
+- Có thể cập nhật dải mới bằng lệnh `INSERT` tương tự ví dụ trên hoặc import file seed riêng.
 
-## Running Tests
-Execute repository checks from the project root:
-```bash
-php tests/run_all_tests.php
-```
-The script validates required folders and files exist. It exits non-zero if any check fails.
-
-## Building the WHMCS Module ZIP
-Package the module for distribution:
-```bash
-./scripts/build_module.sh
-```
-The script reads `VERSION` (creating one if missing) and outputs `dist/dataz-proxy-module-<VERSION>.zip` containing only the WHMCS module.
-
-## Releasing
-To tag, push, and optionally publish a GitHub release:
-```bash
-./scripts/release_module.sh            # use current VERSION
-./scripts/release_module.sh 1.0.1      # set and release a new version
-```
-The release script runs the build, commits `dist/` and `VERSION`, creates a tag, pushes to origin, and uses `gh release create` when GitHub CLI is available.
-
-## Troubleshooting
-- **Backend returns 401**: Verify the `Authorization: Bearer` token matches `config.php`.
-- **No free IP/port**: Ensure `mod_dataz_proxy_ip_pool` and `mod_dataz_proxy_port_pool` contain unused entries and `is_used` is `0`.
-- **Squid/Dante not applying changes**: Check systemctl status and logs, and confirm the backend PHP process has permission to write `/etc/squid/conf.d/` and `/etc/systemd/system/`.
-- **Virtualizor attach/detach fails**: Validate API URL/key/pass and that the target VPS ID is correct and has available IP slots.
-- **Build/release script errors**: Confirm `zip`, `git`, and optionally `gh` are installed and accessible in PATH.
+## Gỡ lỗi cơ bản
+- **Backend trả 401**: Kiểm tra header `Authorization: Bearer` khớp `config.php`.
+- **Hết IP/port**: Đảm bảo bảng pool có dải hợp lệ và `current_int/current_port` chưa vượt giới hạn.
+- **Squid/Dante không áp dụng thay đổi**: Kiểm tra trạng thái service, log và quyền ghi `/etc/squid/conf.d/` cùng `/etc/systemd/system/`.
+- **Virtualizor gán/gỡ IP thất bại**: Xác thực API URL/key/pass và VPS ID; đảm bảo VPS còn slot IP khả dụng.
+- **Lỗi build/release**: Kiểm tra `zip`, `git` và (nếu dùng) `gh` có trong PATH.

@@ -22,6 +22,15 @@ class Utils
         return $str;
     }
 
+    public static function intToIp($int)
+    {
+        $value = (int) $int;
+        if ($value < 0) {
+            $value = $value + 4294967296;
+        }
+        return long2ip($value);
+    }
+
     public static function logMessage($level, $message, array $context = [])
     {
         $config = $GLOBALS['config'];
