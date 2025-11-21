@@ -24,53 +24,47 @@ function require_auth()
 
 function get_active_proxies()
 {
-    return DB::fetchAll('SELECT * FROM mod_dataz_proxy_services WHERE status != "deleted"');
+    return DB::fetchAll('SELECT * FROM mod_dataz_proxy_services WHERE status = "active"');
 }
 
 function allocate_ip()
 {
-    $ranges = DB::fetchAll('SELECT * FROM mod_dataz_proxy_ip_pool ORDER BY id ASC');
-    foreach ($ranges as $range) {
-        $start = (int)$range['start_int'];
-        $end = (int)$range['end_int'];
-        $current = $range['current_int'] !== null ? (int)$range['current_int'] : null;
-        $next = $current === null ? $start : $current + 1;
-        if ($next > $end) {
-            continue;
-        }
-        DB::execute(
-            'UPDATE mod_dataz_proxy_ip_pool SET current_int = :curr, updated_at = NOW() WHERE id = :id',
-            [
-                ':curr' => $next,
-                ':id' => $range['id'],
-            ]
-        );
-        return Utils::intToIp($next);
-    }
-    throw new RuntimeException('No free IP available');
-}
-
-function allocate_port()
-{
-    $range = DB::fetch('SELECT * FROM mod_dataz_proxy_port_pool ORDER BY id ASC LIMIT 1');
-    if (!$range) {
-        throw new RuntimeException('No port ranges configured');
-    }
-    $min = (int)$range['min_port'];
-    $max = (int)$range['max_port'];
-    $current = $range['current_port'] !== null ? (int)$range['current_port'] : null;
-    $next = $current === null ? $min : $current + 1;
-    if ($next > $max) {
-        throw new RuntimeException('No free port available');
+    $row = DB::fetch('SELECT * FROM mod_dataz_proxy_ip_pool WHERE is_used = 0 ORDER BY id ASC LIMIT 1');
+    if (!$row) {
+        throw new RuntimeException('No free IP available');
     }
     DB::execute(
-        'UPDATE mod_dataz_proxy_port_pool SET current_port = :curr, updated_at = NOW() WHERE id = :id',
-        [
-            ':curr' => $next,
-            ':id' => $range['id'],
-        ]
+        'UPDATE mod_dataz_proxy_ip_pool SET is_used = 1, updated_at = NOW() WHERE id = :id',
+        [':id' => $row['id']]
     );
-    return $next;
+    return $row;
+}
+
+function allocate_ports($count = 2)
+{
+    $rows = DB::fetchAll('SELECT * FROM mod_dataz_proxy_port_pool WHERE is_used = 0 ORDER BY id ASC LIMIT ' . (int)$count);
+    if (count($rows) < $count) {
+        throw new RuntimeException('No free port available');
+    }
+    $ports = [];
+    foreach ($rows as $row) {
+        DB::execute(
+            'UPDATE mod_dataz_proxy_port_pool SET is_used = 1, updated_at = NOW() WHERE id = :id',
+            [':id' => $row['id']]
+        );
+        $ports[] = $row;
+    }
+    return $ports;
+}
+
+function free_ip($ipAddress)
+{
+    DB::execute('UPDATE mod_dataz_proxy_ip_pool SET is_used = 0, attached_to_vps_id = NULL, updated_at = NOW() WHERE ip_address = :ip', [':ip' => $ipAddress]);
+}
+
+function free_port($port)
+{
+    DB::execute('UPDATE mod_dataz_proxy_port_pool SET is_used = 0, updated_at = NOW() WHERE port = :p', [':p' => $port]);
 }
 
 $router->add('POST', '/proxy/create', function () use ($config) {
@@ -80,7 +74,6 @@ $router->add('POST', '/proxy/create', function () use ($config) {
     $quantity = $quantity > 0 ? $quantity : 1;
     $serviceId = (int)$data['service_id'];
     $userId = (int)$data['user_id'];
-    $proxyType = $data['proxy_type'];
     $autoAssign = !empty($data['auto_assign_ip']);
     $virtUrl = $data['virt_api_url'] ?? $config['virtualizor']['api_url'];
     $virtKey = $data['virt_api_key'] ?? $config['virtualizor']['api_key'];
@@ -88,30 +81,38 @@ $router->add('POST', '/proxy/create', function () use ($config) {
     $virtVpsId = $data['virt_vps_id'] ?? null;
 
     $created = [];
+    $allocated = ['ips' => [], 'ports' => []];
     try {
         for ($i = 0; $i < $quantity; $i++) {
-            $ipAddress = allocate_ip();
-            $portValue = allocate_port();
+            $ipRow = allocate_ip();
+            $ports = allocate_ports(2);
+            $allocated['ips'][] = $ipRow['ip_address'];
+            $allocated['ports'][] = $ports[0]['port'];
+            $allocated['ports'][] = $ports[1]['port'];
 
             if ($autoAssign && $virtUrl && $virtKey && $virtPass && $virtVpsId) {
-                Virtualizor::addIp($virtUrl, $virtKey, $virtPass, $virtVpsId, $ipAddress);
+                Virtualizor::addIp($virtUrl, $virtKey, $virtPass, $virtVpsId, $ipRow['ip_address']);
+                DB::execute('UPDATE mod_dataz_proxy_ip_pool SET attached_to_vps_id = :vps, updated_at = NOW() WHERE id = :id', [
+                    ':vps' => $virtVpsId,
+                    ':id' => $ipRow['id'],
+                ]);
             }
 
-            $username = Utils::randomString(10);
+            $username = 'proxy_' . Utils::randomString(8);
             $password = Utils::randomString(16);
             $status = 'active';
 
             $proxyId = DB::insert(
-                'INSERT INTO mod_dataz_proxy_services (service_id, user_id, proxy_ip, proxy_port, proxy_username, proxy_password, proxy_type, status, created_at, updated_at)
-                 VALUES (:sid, :uid, :ip, :port, :user, :pass, :type, :status, NOW(), NOW())',
+                'INSERT INTO mod_dataz_proxy_services (service_id, user_id, proxy_ip, http_port, socks5_port, proxy_username, proxy_password, status, created_at, updated_at)
+                 VALUES (:sid, :uid, :ip, :http_port, :socks_port, :user, :pass, :status, NOW(), NOW())',
                 [
                     ':sid' => $serviceId,
                     ':uid' => $userId,
-                    ':ip' => $ipAddress,
-                    ':port' => $portValue,
+                    ':ip' => $ipRow['ip_address'],
+                    ':http_port' => $ports[0]['port'],
+                    ':socks_port' => $ports[1]['port'],
                     ':user' => $username,
                     ':pass' => $password,
-                    ':type' => $proxyType,
                     ':status' => $status,
                 ]
             );
@@ -120,11 +121,14 @@ $router->add('POST', '/proxy/create', function () use ($config) {
                 'id' => $proxyId,
                 'service_id' => $serviceId,
                 'user_id' => $userId,
-                'proxy_ip' => $ipAddress,
-                'proxy_port' => $portValue,
+                'ip' => $ipRow['ip_address'],
+                'proxy_ip' => $ipRow['ip_address'],
+                'http_port' => (int)$ports[0]['port'],
+                'socks5_port' => (int)$ports[1]['port'],
+                'username' => $username,
+                'password' => $password,
                 'proxy_username' => $username,
                 'proxy_password' => $password,
-                'proxy_type' => $proxyType,
                 'status' => $status,
             ];
         }
@@ -135,6 +139,12 @@ $router->add('POST', '/proxy/create', function () use ($config) {
 
         Response::json(['message' => 'created', 'data' => ['proxies' => $created]]);
     } catch (Exception $e) {
+        foreach ($allocated['ports'] as $p) {
+            free_port($p);
+        }
+        foreach ($allocated['ips'] as $ip) {
+            free_ip($ip);
+        }
         Utils::logMessage('error', 'create failed', ['error' => $e->getMessage()]);
         Response::json(['message' => $e->getMessage()], 400);
     }
@@ -150,7 +160,7 @@ $router->add('POST', '/proxy/reset_pass', function () use ($config) {
     }
     $updated = [];
     foreach ($proxies as $proxy) {
-        $newUser = Utils::randomString(10);
+        $newUser = 'proxy_' . Utils::randomString(8);
         $newPass = Utils::randomString(16);
         DB::execute('UPDATE mod_dataz_proxy_services SET proxy_username = :user, proxy_password = :pass, updated_at = NOW() WHERE id = :id', [
             ':user' => $newUser,
@@ -195,16 +205,24 @@ $router->add('DELETE', '/proxy/delete', function () use ($config) {
     $data = Utils::jsonInput();
     $serviceId = (int)$data['service_id'];
     $proxies = DB::fetchAll('SELECT * FROM mod_dataz_proxy_services WHERE service_id = :sid', [':sid' => $serviceId]);
+    $virtUrl = $data['virt_api_url'] ?? $config['virtualizor']['api_url'];
+    $virtKey = $data['virt_api_key'] ?? $config['virtualizor']['api_key'];
+    $virtPass = $data['virt_api_pass'] ?? $config['virtualizor']['api_pass'];
+    $virtVpsId = $data['virt_vps_id'] ?? null;
+
     foreach ($proxies as $proxy) {
-        if (!empty($data['virt_api_url']) && !empty($data['virt_api_key']) && !empty($data['virt_api_pass']) && !empty($data['virt_vps_id'])) {
+        if ($virtUrl && $virtKey && $virtPass && $virtVpsId) {
             try {
-                Virtualizor::removeIp($data['virt_api_url'], $data['virt_api_key'], $data['virt_api_pass'], $data['virt_vps_id'], $proxy['proxy_ip']);
+                Virtualizor::removeIp($virtUrl, $virtKey, $virtPass, $virtVpsId, $proxy['proxy_ip']);
             } catch (Exception $e) {
                 Utils::logMessage('warning', 'detach ip failed', ['error' => $e->getMessage(), 'ip' => $proxy['proxy_ip']]);
             }
         }
+        free_ip($proxy['proxy_ip']);
+        free_port($proxy['http_port']);
+        free_port($proxy['socks5_port']);
     }
-    DB::execute('DELETE FROM mod_dataz_proxy_services WHERE service_id = :sid', [':sid' => $serviceId]);
+    DB::execute('UPDATE mod_dataz_proxy_services SET status = "deleted", updated_at = NOW() WHERE service_id = :sid', [':sid' => $serviceId]);
     $proxies = get_active_proxies();
     SquidManager::regenerate($proxies, $config['squid_conf'], $config['squid_passwd']);
     DanteManager::regenerate($proxies, $config['dante_conf_dir'], $config['dante_systemd_dir']);
@@ -213,7 +231,15 @@ $router->add('DELETE', '/proxy/delete', function () use ($config) {
 
 $router->add('GET', '/proxy/list', function () {
     require_auth();
-    $list = DB::fetchAll('SELECT * FROM mod_dataz_proxy_services WHERE status != "deleted"');
+    $serviceId = isset($_GET['service_id']) ? (int)$_GET['service_id'] : null;
+    $params = [];
+    $sql = 'SELECT * FROM mod_dataz_proxy_services WHERE status != "deleted"';
+    if ($serviceId) {
+        $sql .= ' AND service_id = :sid';
+        $params[':sid'] = $serviceId;
+    }
+    $sql .= ' ORDER BY id ASC';
+    $list = DB::fetchAll($sql, $params);
     Response::json(['data' => $list]);
 });
 

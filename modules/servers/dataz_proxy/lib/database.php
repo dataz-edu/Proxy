@@ -6,14 +6,19 @@ class DatazProxyDatabase
     public static function storeProxies(array $proxies)
     {
         foreach ($proxies as $proxy) {
+            $ip = isset($proxy['proxy_ip']) ? $proxy['proxy_ip'] : ($proxy['ip'] ?? '');
+            $httpPort = isset($proxy['http_port']) ? $proxy['http_port'] : ($proxy['proxy_port'] ?? 0);
+            $socksPort = isset($proxy['socks5_port']) ? $proxy['socks5_port'] : ($proxy['socks_port'] ?? 0);
+            $username = $proxy['proxy_username'] ?? ($proxy['username'] ?? '');
+            $password = $proxy['proxy_password'] ?? ($proxy['password'] ?? '');
             Capsule::table('mod_dataz_proxy_services')->insert([
                 'service_id' => (int)$proxy['service_id'],
                 'user_id' => (int)$proxy['user_id'],
-                'proxy_ip' => $proxy['proxy_ip'],
-                'proxy_port' => (int)$proxy['proxy_port'],
-                'proxy_username' => $proxy['proxy_username'],
-                'proxy_password' => $proxy['proxy_password'],
-                'proxy_type' => $proxy['proxy_type'],
+                'proxy_ip' => $ip,
+                'http_port' => (int)$httpPort,
+                'socks5_port' => (int)$socksPort,
+                'proxy_username' => $username,
+                'proxy_password' => $password,
                 'status' => $proxy['status'] ?? 'creating',
                 'created_at' => date('Y-m-d H:i:s'),
                 'updated_at' => date('Y-m-d H:i:s'),

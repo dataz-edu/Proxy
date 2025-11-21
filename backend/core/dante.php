@@ -4,7 +4,7 @@ class DanteManager
     public static function regenerate(array $proxies, $confDir, $systemdDir)
     {
         $socksProxies = array_filter($proxies, function ($proxy) {
-            return in_array($proxy['proxy_type'], ['socks5', 'both']);
+            return isset($proxy['status']) ? $proxy['status'] === 'active' : true;
         });
 
         foreach ($socksProxies as $proxy) {
@@ -19,8 +19,11 @@ class DanteManager
     private static function writeConfig(array $proxy, $confDir)
     {
         $id = $proxy['id'];
+        if (!is_dir($confDir)) {
+            mkdir($confDir, 0755, true);
+        }
         $config = "logoutput: /var/log/danted/danted-{$id}.log\n" .
-            "internal: {$proxy['proxy_ip']} port = {$proxy['proxy_port']}\n" .
+            "internal: {$proxy['proxy_ip']} port = {$proxy['socks5_port']}\n" .
             "external: {$proxy['proxy_ip']}\n\n" .
             "method: username\n" .
             "user.privileged: root\n" .
@@ -35,7 +38,10 @@ class DanteManager
     private static function writeService(array $proxy, $systemdDir)
     {
         $id = $proxy['id'];
-        $service = "[Unit]\nDescription=Danted SOCKS5 Proxy #{$id} ({$proxy['proxy_ip']}:{$proxy['proxy_port']})\nAfter=network.target\n\n" .
+        if (!is_dir($systemdDir)) {
+            mkdir($systemdDir, 0755, true);
+        }
+        $service = "[Unit]\nDescription=Danted SOCKS5 Proxy #{$id} ({$proxy['proxy_ip']}:{$proxy['socks5_port']})\nAfter=network.target\n\n" .
             "[Service]\nExecStart=/usr/local/sbin/sockd -f /etc/danted-{$id}.conf\nRestart=always\nLimitNOFILE=65535\n\n" .
             "[Install]\nWantedBy=multi-user.target\n";
 

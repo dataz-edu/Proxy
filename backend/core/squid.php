@@ -4,14 +4,14 @@ class SquidManager
     public static function regenerate(array $proxies, $configPath, $passwdPath)
     {
         $httpProxies = array_filter($proxies, function ($proxy) {
-            return in_array($proxy['proxy_type'], ['http', 'both']);
+            return isset($proxy['status']) ? $proxy['status'] === 'active' : true;
         });
 
         $lines = [];
         $authUsers = [];
         foreach ($httpProxies as $proxy) {
-            $portName = 'p_' . $proxy['proxy_port'];
-            $lines[] = sprintf('http_port %s:%d name=%s', $proxy['proxy_ip'], $proxy['proxy_port'], $portName);
+            $portName = 'p_' . $proxy['http_port'];
+            $lines[] = sprintf('http_port %s:%d name=%s', $proxy['proxy_ip'], $proxy['http_port'], $portName);
             $lines[] = sprintf('acl %s myportname %s', $portName, $portName);
             $lines[] = sprintf('tcp_outgoing_address %s %s', $proxy['proxy_ip'], $portName);
             $authUsers[$proxy['proxy_username']] = $proxy['proxy_password'];

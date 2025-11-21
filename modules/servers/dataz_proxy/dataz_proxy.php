@@ -33,12 +33,6 @@ function dataz_proxy_ConfigOptions()
             'Type' => 'password',
             'Size' => '50',
         ],
-        'PROXY_TYPE' => [
-            'FriendlyName' => 'Proxy Type',
-            'Type' => 'dropdown',
-            'Options' => 'http,socks5,both',
-            'Default' => 'http',
-        ],
         'AUTO_ASSIGN_IP' => [
             'FriendlyName' => 'Auto Assign IP',
             'Type' => 'yesno',
@@ -86,12 +80,11 @@ function dataz_proxy_CreateAccount(array $params)
             'service_id' => (int)$params['serviceid'],
             'user_id' => (int)$params['clientsdetails']['userid'],
             'quantity' => $quantity,
-            'proxy_type' => $params['configoption3'],
-            'auto_assign_ip' => (bool)$params['configoption4'],
-            'virt_api_url' => $params['configoption5'],
-            'virt_api_key' => $params['configoption6'],
-            'virt_api_pass' => $params['configoption7'],
-            'virt_vps_id' => $params['configoption8'],
+            'auto_assign_ip' => (bool)$params['configoption3'],
+            'virt_api_url' => $params['configoption4'],
+            'virt_api_key' => $params['configoption5'],
+            'virt_api_pass' => $params['configoption6'],
+            'virt_vps_id' => $params['configoption7'],
         ];
 
         $response = $api->post('/proxy/create', $payload);
@@ -100,8 +93,20 @@ function dataz_proxy_CreateAccount(array $params)
         }
 
         $proxies = $response['data']['proxies'] ?? [];
-        DatazProxyDatabase::storeProxies($proxies);
-        $formatted = DatazProxyHelpers::formatProxyList($proxies);
+        $normalized = array_map(function ($proxy) use ($params) {
+            return [
+                'service_id' => (int)$params['serviceid'],
+                'user_id' => (int)$params['clientsdetails']['userid'],
+                'proxy_ip' => $proxy['ip'],
+                'http_port' => $proxy['http_port'],
+                'socks5_port' => $proxy['socks5_port'],
+                'proxy_username' => $proxy['username'],
+                'proxy_password' => $proxy['password'],
+                'status' => $proxy['status'],
+            ];
+        }, $proxies);
+        DatazProxyDatabase::storeProxies($normalized);
+        $formatted = DatazProxyHelpers::formatProxyList($normalized);
         DatazProxyHelpers::updateCustomField($params['serviceid'], $params['pid'], 'Proxy List', $formatted);
 
         return 'success';
@@ -197,14 +202,34 @@ function dataz_proxy_ClientArea(array $params)
         }
     }
 
-    $proxies = DatazProxyDatabase::getByService($params['serviceid']);
-    $status = $proxies ? $proxies[0]['status'] : 'creating';
-
-    if ($params['templatefile']) {
-        $templateFile = $params['templatefile'];
-    } else {
-        $templateFile = 'clientarea';
+    $proxies = [];
+    try {
+        $listResp = $api->get('/proxy/list', ['service_id' => (int)$params['serviceid']]);
+        if ($listResp['success'] && isset($listResp['data'])) {
+            foreach ($listResp['data'] as $item) {
+                $proxies[] = [
+                    'id' => $item['id'],
+                    'proxy_ip' => $item['proxy_ip'],
+                    'http_port' => $item['http_port'],
+                    'socks5_port' => $item['socks5_port'],
+                    'proxy_username' => $item['proxy_username'],
+                    'proxy_password' => $item['proxy_password'],
+                    'status' => $item['status'],
+                ];
+            }
+            DatazProxyDatabase::deleteByService($params['serviceid']);
+            DatazProxyDatabase::storeProxies($listResp['data']);
+        }
+    } catch (Exception $e) {
+        $proxies = DatazProxyDatabase::getByService($params['serviceid']);
     }
+
+    if (empty($proxies)) {
+        $proxies = DatazProxyDatabase::getByService($params['serviceid']);
+    }
+
+    $status = $proxies ? $proxies[0]['status'] : 'creating';
+    $templateFile = $params['templatefile'] ? $params['templatefile'] : 'clientarea';
 
     return [
         'templatefile' => $templateFile,

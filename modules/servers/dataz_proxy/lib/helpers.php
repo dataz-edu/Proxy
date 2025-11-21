@@ -7,7 +7,8 @@ class DatazProxyHelpers
     {
         $lines = [];
         foreach ($proxies as $proxy) {
-            $lines[] = sprintf('%s:%s:%s:%s', $proxy['proxy_ip'], $proxy['proxy_port'], $proxy['proxy_username'], $proxy['proxy_password']);
+            $lines[] = sprintf('HTTP %s:%s:%s:%s', $proxy['proxy_ip'], $proxy['http_port'], $proxy['proxy_username'], $proxy['proxy_password']);
+            $lines[] = sprintf('SOCKS5 %s:%s:%s:%s', $proxy['proxy_ip'], $proxy['socks5_port'], $proxy['proxy_username'], $proxy['proxy_password']);
         }
         return implode("\n", $lines);
     }
